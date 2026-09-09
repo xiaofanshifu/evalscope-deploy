@@ -6,7 +6,6 @@ services:
       args:
         EVALSCOPE_VERSION: "v1.10.0"
     image: "evalscope:v1.10.0"
-    container_name: evalscope
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
