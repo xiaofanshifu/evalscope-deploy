@@ -1,9 +1,27 @@
-# 轻量级原版 evalscope 镜像 - 官方 pip 安装
-# 仅用于压测(perf)/评测模型 API + Web 可视化(service)
-FROM python:3.10-slim
+# 轻量文本评测镜像 - 支持 pip 官方包 / 源码两种安装方式
+# 用途：文本基准评测 + 模型 API 压测 + Web 可视化（不含图像/视频/代码执行）
 
-# evalscope 版本号（切换版本改 docker-compose.yaml 里的 EVALSCOPE_VERSION 即可）
-ARG EVALSCOPE_VERSION=1.11.0
+# 基础镜像：抽成 ARG 以便 LABEL 记录，升级 Python 版本只改这一处
+# 3.12-slim 与 3.10-slim 同为 Debian trixie 基础层，apt 源与包名一致
+ARG BASE_IMAGE=python:3.12-slim
+FROM ${BASE_IMAGE}
+
+# 重新声明，使 BASE_IMAGE 在后续 LABEL 中可用
+ARG BASE_IMAGE
+
+# 安装方式：pip（PyPI 安装）| source（git 源码安装），由 deploy.sh 写入 docker-compose.override.yaml
+ARG INSTALL_METHOD=pip
+# pip 方式的版本号
+ARG EVALSCOPE_VERSION=1.12.0
+# source 方式的 git 分支/tag/commit
+ARG EVALSCOPE_REF=main
+# 安装组件（固定在 docker-compose.yaml 的 EVALSCOPE_PACKAGES）
+ARG EVALSCOPE_PACKAGES=perf,service,ifeval,ifbench,openai_mrcr
+
+# 可选代理构建参数（默认不启用；Compose 从 EVALSCOPE_PROXY 注入，空值即无代理）
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
 
 WORKDIR /workspace
 
@@ -12,24 +30,70 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_DEFAULT_TIMEOUT=300 \
     PYTHONUNBUFFERED=1
 
-# 最小化系统依赖
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# 镜像标识：安装方式 / 版本 / 扩展包 / 基础镜像，随镜像走，docker image inspect 与任何
+# registry 工具均可读。pip 方式 version 有值、revision 为空；source 方式反之，可据此区分。
+# 必须用 Dockerfile LABEL + ARG 插值：compose 的 build.labels 由 compose 从宿主机环境
+# 插值，拿不到 build arg，会被解析成空字符串。
+LABEL org.opencontainers.image.title="evalscope" \
+      org.opencontainers.image.description="EvalScope 部署镜像（压测 perf + Web 可视化 service + 基准评测）" \
+      org.opencontainers.image.base.name="${BASE_IMAGE}" \
+      org.opencontainers.image.version="${EVALSCOPE_VERSION}" \
+      org.opencontainers.image.revision="${EVALSCOPE_REF}" \
+      io.evalscope.install.method="${INSTALL_METHOD}" \
+      io.evalscope.packages="${EVALSCOPE_PACKAGES}"
 
-# pip 源镜像
+# 配置 apt 镜像源（阿里云）
+RUN sed -i 's/deb.debian.org/mirrors.aliyun.com/g' /etc/apt/sources.list.d/debian.sources
+
+# 配置 pip 镜像源（清华）
 RUN pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple
+
+# 最小化系统依赖（git/xz 为源码安装所需）
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates git xz-utils \
+    && rm -rf /var/lib/apt/lists/*
 
 # FAQ 中提到的预装依赖，避免编译失败
 RUN pip install python-dotenv
 
-# 安装 perf（压测）+ service（WebUI），锁定版本保证可复现构建
-RUN pip install "evalscope[perf,service]==${EVALSCOPE_VERSION}" && \
-    evalscope --help >/dev/null 2>&1 || true
+# 按 INSTALL_METHOD 安装：
+#   pip    → PyPI 锁定版本（wheel 自带预构建的 Web 前端）
+#   source → GitHub 源码 + npm 构建前端 dist + editable 安装（Node 工具链留在镜像内便于二次开发）
+# 组件固定为轻量文本评测集（perf,service,ifeval,ifbench,openai_mrcr），无 torch/opencv 等重型依赖
+# 依赖中存在仅提供 sdist 的包（如 polygon3），安装期间临时引入编译链，装完即清除（同层不增体积）
+RUN set -e; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends build-essential; \
+    rm -rf /var/lib/apt/lists/*; \
+    if [ "$INSTALL_METHOD" = "source" ]; then \
+        ok=0; \
+        for i in 1 2 3; do \
+            git clone https://github.com/modelscope/evalscope.git /opt/evalscope && ok=1 && break; \
+            echo "git clone failed (attempt $i), retrying in 5s..."; \
+            rm -rf /opt/evalscope; sleep 5; \
+        done; \
+        [ "$ok" = "1" ]; \
+        git -C /opt/evalscope checkout "${EVALSCOPE_REF}"; \
+        curl -fsSL "https://registry.npmmirror.com/-/binary/node/v22.23.3/node-v22.23.3-linux-x64.tar.xz" -o /tmp/node.tar.xz; \
+        tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1; \
+        rm -f /tmp/node.tar.xz; \
+        npm config set registry https://registry.npmmirror.com; \
+        cd /opt/evalscope/evalscope/web; \
+        npm install; \
+        npm run build; \
+        rm -rf node_modules; \
+        npm cache clean --force; \
+        pip install -e "/opt/evalscope[${EVALSCOPE_PACKAGES}]"; \
+    else \
+        pip install "evalscope[${EVALSCOPE_PACKAGES}]==${EVALSCOPE_VERSION}"; \
+    fi; \
+    apt-get purge -y build-essential >/dev/null; \
+    apt-get autoremove -y >/dev/null; \
+    rm -rf /var/lib/apt/lists/*; \
+    evalscope --help >/dev/null 2>&1
 
-# 暴露可视化 Web 服务端口
-EXPOSE 9000
+# 暴露可视化 Web 服务端口（容器内固定监听 80，宿主机映射端口由 compose 的 EVALSCOPE_HOST_PORT 配置）
+EXPOSE 80
 
-# 默认监听 0.0.0.0:9000，输出目录指向 /workspace/outputs
-CMD ["evalscope", "service", "--host", "0.0.0.0", "--port", "9000", "--outputs", "/workspace/outputs"]
-
+# 默认监听 0.0.0.0:80，输出目录指向 /workspace/outputs
+CMD ["evalscope", "service", "--host", "0.0.0.0", "--port", "80", "--outputs", "/workspace/outputs"]
