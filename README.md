@@ -6,7 +6,7 @@
 
 **支持**：
 
-- **92 项**纯文本基准评测（知识 / 推理 / 数学 / 指令遵循 / 中文 / 长上下文 / 工具调用 / NER / 医疗等）
+- 纯文本基准评测（知识 / 推理 / 数学 / 指令遵循 / 中文 / 长上下文 / 工具调用 / NER / 医疗等）
 - 模型 API 性能压测
 - Web 可视化任务管理与报告
 
@@ -40,7 +40,7 @@ bash deploy.sh 1.12.0      # pip 版
 
 ## 组件说明
 
-pip 组件**固定**为 5 个，定义在 `docker-compose.yaml` 的 `EVALSCOPE_PACKAGES`：
+pip 组件**固定**为 6 个，定义在 `docker-compose.yaml` 的 `EVALSCOPE_PACKAGES`：
 
 | extra | 依赖 | 作用 |
 |---|---|---|
@@ -49,12 +49,13 @@ pip 组件**固定**为 5 个，定义在 `docker-compose.yaml` 的 `EVALSCOPE_P
 | `ifeval` | langdetect + nltk | IFEval 指令遵循基准 |
 | `ifbench` | emoji + syllapy + nltk | IFBench 指令遵循进阶基准 |
 | `openai_mrcr` | tiktoken | OpenAI MRCR 长上下文基准 |
+| `needle_haystack` | matplotlib + seaborn | 大海捞针基准，精确指定上下文长度的数据集 |
 
-> 注意：`all` 不是「全部」：上游 `pyproject.toml` 里 `all` 只等于 7 个 extra（含 torch、diffusers、opencv、langchain），会拉数 GB 依赖。
+> 注意：`all` 不是「全部」。上游 `pyproject.toml` 里 `all` 只等于 7 个 extra（含 torch、diffusers、opencv、langchain），会拉数 GB 依赖。
 
-## 可用数据集（92 项）
+## 可用数据集
 
-除 11 项需 LLM Judge 的基准外，其余均零运行时依赖：无需 Sandbox、user_model 或任何外部服务。
+除需 LLM Judge 的基准外，其余均零运行时依赖：无需 Sandbox、user_model 或任何外部服务。
 
 ### 推荐清单（21 项）
 
@@ -138,8 +139,11 @@ tool_bench              2369    general_fc               2000
 **长上下文 / 多轮**
 
 ```text
-longbench_v2              503    locomo                    1986
+longbench_v2              503    openai_mrcr               2400
+locomo                    1986   needle_haystack           按 context_lengths × depth 生成
 ```
+
+三者的长度可控性完全不同，跑之前先读「长上下文的致命前提」一节：`longbench_v2` 无上限参数且危险样本藏在 `short` 子集，`openai_mrcr` 只能按固定 8 档筛选，只有 `needle_haystack` 能精确指定。
 
 **中文**
 
@@ -186,12 +190,17 @@ data_collection   general_mcq   general_qa
 
 | 类别 | 数据集 | 缺什么 |
 |---|---|---|
-| 需额外 extra | `multi_if` `olympiad_bench` `needle_haystack` `arena_hard` `general_arena` `wmt24pp` `refcoco` `swe_bench_lite` `swe_bench_verified` `swe_bench_verified_mini` | 对应 pip extra |
+| 需额外 extra | `multi_if` `refcoco` | 对应 pip extra（`multi_if` 缺 `pythainlp`；`refcoco` 缺 `pycocoevalcap`） |
+| 需 Judge | `mt_bench` `simple_qa` `chinese_simpleqa` `alpaca_eval` `drivel_writing` `hle` `plawbench` `minerva_math` `imo_answerbench` `docmath` `cl_bench` `aa_lcr` `frames` `longmemeval` `one_million_bench` `health_bench` `arena_hard` `general_arena` | Judge 服务（后两项的 pip 依赖镜像已内置，卡点是要算 win_rate 必须有 Judge） |
 | 需 Sandbox | `live_code_bench` `mbpp` `mbpp_plus` `bigcodebench` `bigcodebench_hard` `multiple_humaneval` `multiple_mbpp` | Docker |
-| 需 Judge | `mt_bench` `simple_qa` `chinese_simpleqa` `alpaca_eval` `drivel_writing` `hle` `plawbench` `minerva_math` `imo_answerbench` `docmath` `cl_bench` `aa_lcr` `frames` `longmemeval` `one_million_bench` `health_bench` | Judge 服务 |
 | 需 GitHub 源码包 | `perspective_gap_prompt_writing` `perspective_gap_role_assignment` | 打分依赖装自个人仓库 `WhymustIhaveaname/PerspectiveGap`，非 PyPI 包，会给构建引入 GitHub 依赖 |
-| 上游数据缺失 | `openai_mrcr` | ModelScope 镜像 `openai-mirror/mrcr` 的数据文件已被删除，加载即报 `Corrupt snappy compressed data` |
 | 非文本 | `seed_tts_eval` | 音频模型 |
+
+`olympiad_bench` 可用——它要的 `latex2sympy2_extended` 是上游核心依赖，镜像已内置。
+
+### 装 extra 时注意名字
+
+本文提到的数据集名 ≠ pip extra 名，两处对不上，**照抄数据集名会 pip 报错**：`swe_bench_lite` / `swe_bench_verified` / `swe_bench_verified_mini` 对应 extra `swe_bench`，`wmt24pp` 对应 extra `wmt`。
 
 ## 评测协议建议
 
@@ -204,7 +213,32 @@ Max Tokens     16384（长上下文批次用 8192）
 重复次数       1
 ```
 
-`Temperature=0` 时不要开重复次数——重复多次结果几乎一致，只浪费请求量。仅在用 `Temperature=1` 测采样稳定性时才对小数据集重复 3 次。
+> 注意：`Temperature=0` 时不要开重复次数——重复多次结果几乎一致，只浪费请求量。仅在用 `Temperature=1` 测采样稳定性时才对小数据集重复 3 次。
+
+### 长上下文
+
+**EvalScope 不对 prompt 长度做任何限制**，写多长发多长，能跑多长完全取决于 LLM 服务端。超长请求会打崩 vLLM，务必先确认服务端的 KV cache 能吃下多长，再逐档试探（如先用单样本从 32k 起步翻倍，哪一档开始报错就停）。
+
+三个可用基准：
+
+| 数据集 | 语料 | 长度可控 |
+|---|---|---|
+| `longbench_v2` | 真实长文档 | ❌ adapter 无上限参数，子集名不代表长度 |
+| `openai_mrcr` | 真实多轮对话 | ❌ 只能按固定档位筛选；下载需整仓拉取（GB 级） |
+| `needle_haystack` | 合成（自拼散文 + 插 needle） | ✅ 唯一能精确指定 |
+
+`needle_haystack` 配置示例（`min=max=L, num_intervals=1` 即恰好 L；`num_intervals` 走等差插值，只能取等差序列）：
+
+```json
+"dataset_args": {"needle_haystack": {
+  "subset_list": ["english"],
+  "extra_params": {
+    "context_lengths_min": 200000, "context_lengths_max": 300000, "context_lengths_num_intervals": 3,
+    "document_depth_percent_min": 0, "document_depth_percent_max": 100, "document_depth_percent_intervals": 10,
+    "tokenizer_path": "<被测模型自己的 tokenizer id>", "show_score": true
+  }
+}}
+```
 
 ### 分批执行
 
@@ -215,6 +249,10 @@ Max Tokens     16384（长上下文批次用 8192）
 | 1 核心 | `mmlu_pro` `mmlu` `gpqa_diamond` `bbh` `musr` `math_500` `gsm8k` `process_bench` `aime26` `hmmt26` `ifeval` `ifbench` `truthful_qa` `ceval` `cmmlu` `cmath` `arc_agi_2` | 8 | 600 |
 | 2 长上下文 | `longbench_v2` `openai_mrcr` | 1 | 1800 |
 | 3 工具调用 | `tool_bench` `general_fc` | 4 | 600 |
+
+长上下文批次再加三条：`eval_batch_size=1`（并发会叠加 KV cache 占用压垮 vLLM）；`generation_config.retries` 设 0 或 1（默认 5 次重试，服务端一崩就是雪崩式重试）；`ignore_errors: true`（单样本超限不中断整批）。
+
+跑完读 `outputs/<task_id>/logs/eval_log.log` 判断还能不能再加一档：HTTP 400 是 prompt 超限，降一档；超时是能塞进去但太慢；Connection refused 说明引擎真的挂了，上一档就是你的真实上限。
 
 ### few-shot 配置
 
@@ -256,10 +294,6 @@ Max Tokens     16384（长上下文批次用 8192）
 - 答案解析用 EvalScope 默认，不做修改
 - 记录 EvalScope commit SHA（`deploy.sh` 会把 `main` 解析成完整 SHA 并写入镜像 tag），不要用 `main` 字样
 
-**推理模型建议双轨制**：统一模式（全部关闭思考）用于公平横比，最佳模式（各自推荐思考等级）用于部署选型。两套结果分开报告，不要混在一张表里。
-
-**量化版对比**：同族 full vs quant 用同一协议，重点看各子集分数变化、答案格式成功率、截断率、输出长度变化。
-
 ## 需要完整评测环境？
 
 图像、视频、代码执行、Judge 类基准需要 torch、opencv、Docker Sandbox、额外 Judge 服务，会让镜像膨胀到数 GB。
@@ -267,14 +301,14 @@ Max Tokens     16384（长上下文批次用 8192）
 **建议在独立服务器上直接安装 EvalScope，不用容器**：
 
 ```bash
-# 裸机 / 虚拟机（系统自带 Docker）
-pip install "evalscope[all,ifeval,sandbox,openai_mrcr]"
+# 裸机 / 虚拟机（系统安装 Docker，即有 sandbox）
+pip install "evalscope[all,ifeval,ifbench,sandbox,openai_mrcr,needle_haystack]"
 evalscope service --host 0.0.0.0 --port 9000 --outputs ./outputs
 ```
 
 裸机部署的好处：系统 Docker 直接可用，Sandbox 无需挂 socket 或另起远程 sandbox 服务，省掉容器方案里最麻烦的一环。
 
-`all` 会拉入 torch / torchvision / diffusers / opencv / sentence-transformers / langchain / OpenCompass / VLMEvalKit 等，镜像或环境数 GB 级，**只适合一次性搭建的完整环境**，不适合日常轻量评测。
+`all` 会拉入 torch / torchvision / diffusers / opencv / sentence-transformers / langchain / OpenCompass / VLMEvalKit 等，镜像或环境数 GB 级，适合一次性搭建完整环境。
 
 ## 实现原理
 
@@ -358,7 +392,7 @@ EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890
 EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890 bash deploy.sh source main
 ```
 
-这是 Docker 的特殊 build args，不写入镜像文件系统与运行时环境（两者实测均无代理残留）；但构建参数会记录在镜像层历史里，`docker history` 可见。
+这是 Docker 的特殊 build args，不写入镜像文件系统与运行时环境；但构建参数会记录在镜像层历史里，`docker history` 可见。
 
 配置代理时，需要绕过代理地址用 `EVALSCOPE_NO_PROXY`（逗号分隔），默认 `localhost,127.0.0.1`：
 
@@ -400,7 +434,7 @@ docker compose config | grep -E 'INSTALL_METHOD:|EVALSCOPE_VERSION:|EVALSCOPE_RE
 
 ```
 evalscope:<版本号>              # pip 方式
-evalscope:source           # source 方式
+evalscope:source               # source 方式
 ```
 
 tag 记录在 `docker-compose.override.yaml` 的 `image:` 字段中。同一 ref 的重复执行会命中构建缓存。
@@ -449,7 +483,7 @@ EvalScope 会先把所有 benchmark 构建完再开始推理，任一适配器�
 
 **Q: `general_fc` / `tool_bench` 在自动补全里看不到？**
 
-它们属于 agent 分类，UI 补全只列 text + multimodal，但输入框是自由文本，手动填入即可。建议先 `limit=2` 验证通路。
+它们属于 agent 分类，UI 补全只列 text + multimodal，但输入框是自由文本，手动填入即可。建议先 `limit=2` 验证通路。`needle_haystack` 同样不在下拉里（补全只读 `DEFAULT_TEXT_BENCHMARKS` 硬编码的那二十来个基准），而且只能走 API 提交——Web 表单没有 `judge.strategy` 字段，它必须显式传 `rule`。
 
 **Q: NER 类数据集（conll2003、wnut2017 等）能跑吗？**
 
@@ -457,4 +491,6 @@ EvalScope 会先把所有 benchmark 构建完再开始推理，任一适配器�
 
 **Q: `ifeval` 首次运行较慢？**
 
-需要下载 NLTK 数据（`punkt_tab`，4MB），evalscope 从 ModelScope OSS 镜像获取，不需要代理。
+需要下载 NLTK 数据（`punkt_tab`，几 MB），evalscope 从 ModelScope OSS 镜像获取，不需要代理。
+
+**但要警惕：缺这个资源不报错，会静默丢样本、分数虚高。** 所以跑完务必核对报告表格的「数量」列——请求 N 条而数量小于 N，说明有样本被丢弃（`ifbench` 同理），该分数不能用于横向对比。
