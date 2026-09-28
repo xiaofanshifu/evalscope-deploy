@@ -17,8 +17,8 @@ warn() { printf '%s %s\n'  "$(date '+%H:%M:%S')" "$*" >&2; }
 # 宿主机端口与构建代理取 docker compose config 的输出 —— 那是 compose 自己解析完
 # .env 后的最终结果，脚本不再自己实现一套 .env 解析规则
 CFG="$(docker compose config 2>/dev/null || true)"
-BUILD_PROXY="$(printf '%s' "$CFG" | awk '/HTTP_PROXY:/{sub(/.*: *"?/,""); gsub(/"/,""); print; exit}')"
-HOST_PORT="$(printf '%s' "$CFG" | awk '/published:/{sub(/.*: *"?/,""); gsub(/"/,""); print; exit}')"
+BUILD_PROXY="$(printf '%s' "$CFG" | awk '/HTTP_PROXY:/{sub(/^[^:]*: */,""); gsub(/"/,""); print; exit}')"
+HOST_PORT="$(printf '%s' "$CFG" | awk '/published:/{sub(/^[^:]*: */,""); gsub(/"/,""); print; exit}')"
 HOST_PORT="${HOST_PORT:-80}"
 
 usage() {
