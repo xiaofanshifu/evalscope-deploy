@@ -370,7 +370,9 @@ EVALSCOPE_HOST_PORT=9000
 
 配置后访问 `http://localhost:9000/dashboard`；不配置则 `http://localhost/dashboard`。
 
-脚本**不预检端口占用**。若目标端口已被外部进程或容器占用，端口绑定失败会由 `docker compose up` 报出（`port is already allocated`），此时镜像通常已构建完成，构建时间被浪费；`deploy.sh` 仍会回滚 `docker-compose.override.yaml`。本项目自身在升级/降级时不受影响——compose 会先停掉旧容器再起新容器，映射的是同一个宿主机端口。
+脚本**不预检端口占用**，也不会因为端口冲突而回滚。若目标端口被外部进程或容器占用，绑定失败由 `docker compose up` 报出（`port is already allocated`）。此时**镜像已构建完成**，`deploy.sh` 会打印镜像 tag、构建时间、commit 和组件列表，并提示处理端口后执行 `docker compose up -d` 即可，**无需重新构建**（`deploy.sh` 把 `build` 和 `up -d` 分成两步就是为了区分这种失败与构建失败）。
+
+端口冲突时旧的容器通常已经停掉（compose 先停旧再起新），所以服务会中断，与升级/降级是否动过端口无关。
 
 因此部署前请自行确认端口空闲，或在 `.env` 里改 `EVALSCOPE_HOST_PORT`。
 
@@ -433,11 +435,20 @@ docker compose config | grep -E 'INSTALL_METHOD:|EVALSCOPE_VERSION:|EVALSCOPE_RE
 ### 镜像标识
 
 ```
-evalscope:<版本号>              # pip 方式
-evalscope:source               # source 方式
+evalscope:<版本号>            # pip 方式，如 evalscope:1.12.0
+evalscope:source-<ref>        # source 方式，如 evalscope:source-main
 ```
 
-tag 记录在 `docker-compose.override.yaml` 的 `image:` 字段中。同一 ref 的重复执行会命中构建缓存。
+`source` 方式的 `<ref>` 取命令行传入值（`main` → `source-main`，`v1.10.0` → `source-v1.10.0`）。Docker tag 只允许 `[a-z0-9._-]`，因此非法的字符替换为 `-`、开头符号去掉；hex sha 截到 7 位（与 git 默认短 sha 一致），分支名和 tag 名不截断。
+
+tag 记录在 `docker-compose.override.yaml` 的 `image:` 字段中。同一 ref 的重复执行会命中构建缓存——**缓存取决于 `EVALSCOPE_REF`（sha）这个构建参数，与 tag 命名无关**，所以同一 ref 重建会复用同一个 tag，旧镜像变成 `<none>` 悬空条目（Docker 正常行为，`docker image prune` 可清）。pip 与 source 两种方式的 tag 不同，镜像可共存，想切回去只需改 override 的 `image:` 一行，无需重新构建。
+
+完整 commit 不在 tag 里，但记录在镜像 label，失败提示会自动打印，也可自行读取：
+
+```bash
+docker inspect evalscope:source-main \
+  --format '{{index .Config.Labels "org.opencontainers.image.revision"}}'
+```
 
 镜像还带 OCI LABEL（`org.opencontainers.image.version` / `.revision` / `io.evalscope.packages` 等），可用 `docker image inspect` 读取。
 
@@ -445,7 +456,19 @@ tag 记录在 `docker-compose.override.yaml` 的 `image:` 字段中。同一 ref
 
 组件固定为轻量集，不含 torch 等重型依赖。`all` 那套会拉入数 GB 依赖，本项目不使用。
 
-构建失败时**运行中的旧容器不受影响**，且 `deploy.sh` 会自动回滚 `docker-compose.override.yaml`，不会出现「配置指向新镜像、实际跑旧镜像」。
+`deploy.sh` 把镜像构建和容器启动分成两步执行，以便区分失败阶段：
+
+| 失败阶段 | 旧容器 | `docker-compose.override.yaml` | 恢复方式 |
+|---|---|---|---|
+| compose 配置校验 | 不受影响 | **回滚** | 改完再跑一次脚本 |
+| `docker compose build` | 不受影响（compose 此时还没动容器） | **回滚** | 修网络/代理后重跑，会命中构建缓存 |
+| `docker compose up -d` | 已停止 | **不回滚** | 镜像已就绪，处理原因后 `docker compose up -d` |
+
+容器启动失败时回滚没有意义：镜像已经打好，回滚配置等于丢掉它，下次重跑若 ref 已推进还要再全量构建一次。所以脚本保留配置并打印镜像信息，让你能确认镜像是好的。
+
+构建过程中按 `Ctrl-C` 也会触发回滚（`trap` 捕获 `INT`/`TERM`），不会留下「override 指向新镜像、旧容器还在跑」的状态。
+
+版本/commit 校验不通过时**不回滚**——此时容器和 override 都已指向新镜像，回滚配置也修不了已在跑的内容。脚本会把当前状态打印出来提示需人工介入。
 
 ## 常用命令
 

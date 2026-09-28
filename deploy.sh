@@ -30,27 +30,34 @@ usage() {
   pip     从 PyPI 安装指定版本，版本号精确锁定（如 1.12.0）
   source  从 GitHub 源码安装，第2个参数为 git 分支/tag/commit（如 main），默认取最新代码
 
-组件固定为: perf,service,ifeval,ifbench,openai_mrcr
+组件固定为: perf,service,ifeval,ifbench,openai_mrcr,needle_haystack
 定义在 docker-compose.yaml 的 EVALSCOPE_PACKAGES，不接受参数覆盖。
-  - perf          压测 + API 客户端
-  - service       Web 可视化
-  - ifeval        langdetect + nltk（IFEval 指令遵循基准）
-  - ifbench       emoji + syllapy + nltk（IFBench 指令遵循进阶）
-  - openai_mrcr   tiktoken（OpenAI MRCR 长上下文基准）
+  - perf              压测 + API 客户端
+  - service           Web 可视化
+  - ifeval            langdetect + nltk（IFEval 指令遵循基准）
+  - ifbench           emoji + syllapy + nltk（IFBench 指令遵循进阶）
+  - openai_mrcr       tiktoken（OpenAI MRCR 长上下文基准）
+  - needle_haystack   matplotlib + seaborn（大海捞针，可精确指定上下文长度）
+
+镜像 tag: pip 方式 evalscope:<版本号>；source 方式 evalscope:source-<ref>
+          ref 取命令行传入值；非 [a-z0-9._-] 字符替换为 -，hex sha 截到 7 位
+          完整 commit 记录在镜像 label org.opencontainers.image.revision
 
   每次执行都是重新构建镜像 + 重建容器；同一 ref 重复执行会命中构建缓存。
 
 流程:
   1. 写入 docker-compose.override.yaml（安装方式、版本/ref、镜像 tag，compose 自动合并）
-  2. 重建镜像并替换容器（outputs/ 数据不受影响）
+  2. 校验配置 → 构建镜像 → 替换容器（outputs/ 数据不受影响）
   3. 校验容器内实际安装的版本/commit
 
 配置构建代理: 在 .env 设置 EVALSCOPE_BUILD_PROXY=http://<host>:<port>，绕过代理 EVALSCOPE_NO_PROXY=<逗号分隔地址>（仅构建期生效）
 
 端口:     容器内固定监听 80；宿主机映射端口默认 80，在 .env 中设置 EVALSCOPE_HOST_PORT 可更改
+          脚本不预检端口占用，被占用时由 docker compose 报出；此时镜像已构建完成，
+          无需重新构建，处理好端口后直接 docker compose up -d 即可
 
-失败回滚: compose 校验或构建失败时自动恢复 docker-compose.override.yaml，
-          运行中的旧容器不受影响，不会出现「配置指向新镜像、实际跑旧镜像」
+失败处理: compose 配置校验或镜像构建失败时自动恢复 docker-compose.override.yaml
+          容器启动失败不回滚 —— 镜像已构建完成，保留配置便于直接重启
 
 示例:
   $(basename "$0") source main            # 源码安装 main 分支最新代码
@@ -58,6 +65,18 @@ usage() {
   $(basename "$0") 1.12.0                 # 方式可省略，默认为 pip
   $(basename "$0") pip 1.12.0             # pip + 显式方式
 EOF
+}
+
+# 把 ref 变成合法的 docker tag 片段：小写化，非 [a-z0-9._-] 换成 -，去掉开头的符号。
+# 只有 hex sha 截到 7 位（与 resolve_ref 的判定一致，也与 git 默认短 sha 一致）——
+# 普通分支/tag 名不截断，否则 release_v2 会被砍成 release 这种无意义的串。
+sanitize_ref() {
+    local r
+    r=$(printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9._-' '-' | sed 's/^[^a-z0-9]*//')
+    if [[ "$1" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+        r="${r:0:7}"
+    fi
+    printf '%s' "$r"
 }
 
 # 将 ref（分支/tag/commit）解析为当前 commit sha，作为构建参数传给 Dockerfile。
@@ -123,7 +142,7 @@ else
         exit 1
     fi
     REF_VALUE="$RESOLVED"
-    TAG="source"
+    TAG="source-$(sanitize_ref "$V")"
     log "[switch] 方式: source（GitHub 源码安装，拉取最新）"
     log "[switch] 目标 ref: $V -> $RESOLVED"
 fi
@@ -132,13 +151,20 @@ log "[switch] 宿主机端口: $HOST_PORT"
 [ -n "$BUILD_PROXY" ] && log "[switch] 构建代理: $BUILD_PROXY" || true
 
 # 改写 override 之前先备份：compose config 校验或构建失败时回滚，
-# 避免出现「override 指向新 tag、实际运行的却是旧镜像」的不一致状态
+# 避免出现「override 指向新 tag、实际运行的却是旧镜像」的不一致状态。
+# 容器启动失败不回滚 —— 那时镜像已经构建完成，回滚只会白白丢掉它，
+# 下次重跑若 ref 已推进就会击穿构建缓存再全量重建一次。
 BACKUP="$(mktemp)"
 if [ -f "$OVERRIDE" ]; then cp "$OVERRIDE" "$BACKUP"; else : > "$BACKUP"; fi
 rollback_override() {
-    cp "$BACKUP" "$OVERRIDE"
+    [ -f "$BACKUP" ] && cp "$BACKUP" "$OVERRIDE"
     rm -f "$BACKUP"
+    return 0
 }
+# 构建要十几分钟，Ctrl-C / kill 会让 set -e 来不及清理，override 就停在
+# 「指向新 tag」而旧容器还在跑的状态 —— 正是上面注释要避免的那种不一致。
+# 只捕 INT/TERM，不捕 EXIT：正常错误路径已显式调用 rollback_override。
+trap 'rollback_override' INT TERM
 
 # 生成部署状态覆盖文件：compose 会自动与 docker-compose.yaml 合并
 # 只写安装方式与版本/ref；EVALSCOPE_PACKAGES 故意不写 —— 组件固定在
@@ -179,16 +205,42 @@ printf '%s\n' "$COMPOSE_CONFIG" | grep -E 'INSTALL_METHOD:|EVALSCOPE_VERSION:|EV
 log "[switch] compose 配置校验通过"
 
 _t0=$(date +%s)
-log "[run ] 构建镜像并替换容器"
-log "[cmd ] docker compose up -d --build"
-if ! docker compose up -d --build; then
-    log "[done] 构建镜像并替换容器 — 失败 耗时=$(($(date +%s) - _t0))s"
+log "[run ] 构建镜像"
+log "[cmd ] docker compose build"
+if ! docker compose build; then
+    log "[done] 构建镜像 — 失败 耗时=$(($(date +%s) - _t0))s"
     rollback_override
-    warn "[switch] ✗ 构建/启动失败，已回滚 $OVERRIDE"
-    warn "         运行中的旧容器未受影响，服务照常；修掉问题后重新执行本脚本即可"
+    warn "[switch] ✗ 构建失败，已回滚 $OVERRIDE"
+    warn "         目标镜像 evalscope:$TAG 未生成；旧容器未受影响，服务照常"
     exit 1
 fi
-log "[done] 构建镜像并替换容器 — 退出码=0 耗时=$(($(date +%s) - _t0))s"
+log "[done] 构建镜像 — 退出码=0 耗时=$(($(date +%s) - _t0))s"
+
+# 构建与启动分开：这样能区分「构建失败」（回滚）和「启动失败」（不回滚）。
+# 启动失败时镜像已就绪，保留 override 让用户处理好原因后直接
+# docker compose up -d 即可，不必重新构建。
+_t0=$(date +%s)
+log "[run ] 替换容器"
+log "[cmd ] docker compose up -d"
+if ! docker compose up -d; then
+    log "[done] 替换容器 — 失败 耗时=$(($(date +%s) - _t0))s"
+    warn "[switch] ✗ 镜像已构建完成，容器未启动（未回滚 $OVERRIDE）"
+    warn "         镜像    evalscope:$TAG"
+    if _img="$(docker images "evalscope:$TAG" --format '{{.Size}}   built {{.CreatedSince}}' 2>/dev/null | head -1)" && [ -n "$_img" ]; then
+        warn "         状态    $_img"
+    fi
+    if _rev="$(docker inspect "evalscope:$TAG" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' 2>/dev/null)"; then
+        [ -n "$_rev" ] && warn "         commit  ${_rev:0:12}"
+    fi
+    if _pkg="$(docker inspect "evalscope:$TAG" --format '{{index .Config.Labels "io.evalscope.packages"}}' 2>/dev/null)"; then
+        [ -n "$_pkg" ] && warn "         组件    $_pkg"
+    fi
+    warn "         最常见原因：宿主机端口 $HOST_PORT 已被占用"
+    warn "         处理后执行 docker compose up -d 即可，无需重新构建"
+    exit 1
+fi
+log "[done] 替换容器 — 退出码=0 耗时=$(($(date +%s) - _t0))s"
+trap - INT TERM
 rm -f "$BACKUP"
 
 # 校验容器内实际安装结果
@@ -197,7 +249,11 @@ if [ "$METHOD" = "pip" ]; then
     if [ "$ACTUAL" = "$V" ]; then
         log "[switch] ✓ 完成，容器内 evalscope = $ACTUAL"
     else
+        # 此时不回滚：override 与容器都指向新镜像，回滚配置也修不了已在跑的内容。
+        # 把状态讲清楚，让使用者知道要人工介入而不是以为脚本没生效。
         warn "[switch] ✗ 版本不符: 预期 $V, 实际 ${ACTUAL:-未安装}"
+        warn "         当前状态：容器已用镜像 evalscope:$TAG 启动，但内容不是预期版本"
+        warn "         $OVERRIDE 也已指向该镜像。需人工排查镜像内容后重新部署"
         exit 1
     fi
 else
@@ -206,6 +262,8 @@ else
         log "[switch] ✓ 完成，容器内源码 commit = $ACTUAL_SHA"
     else
         warn "[switch] ✗ commit 不符: 预期 $RESOLVED, 实际 ${ACTUAL_SHA:-未知}"
+        warn "         当前状态：容器已用镜像 evalscope:$TAG 启动，但内容不是预期 commit"
+        warn "         $OVERRIDE 也已指向该镜像。需人工排查镜像内容后重新部署"
         exit 1
     fi
 fi
