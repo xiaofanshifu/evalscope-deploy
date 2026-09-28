@@ -11,42 +11,15 @@ REPO_URL="https://github.com/modelscope/evalscope.git"
 # 部署状态覆盖文件（compose 自动与 docker-compose.yaml 合并）
 OVERRIDE="docker-compose.override.yaml"
 
-# 从 .env 读一个键的值，语义与 docker compose 的 .env 解析对齐：
-#   - 不加引号：剥离行内注释（# 前须有空白，compose 的规则），去首尾空白
-#   - 单/双引号：取引号内内容，引号后的内容忽略
-#   - export KEY=... 形式不支持（与 compose 不同，compose 支持；此处只取裸 KEY=）
-# 不做变量插值（$VAR），本项目这两个键的值不含变量引用。
-read_env_value() {
-    local key="$1" file="$2" val=""
-    [ -f "$file" ] || { printf '%s' ""; return 0; }
-    val=$(sed -n "s/^[[:space:]]*${key}=//p" "$file" | head -1)
-    # 注意：模式只匹配"以引号开头"，不能要求"以引号结尾" —— 否则 KEY="9000"  # 注释
-    # 这种带尾部注释的写法会漏进下面的裸值分支，引号不会被剥掉
-    case "$val" in
-        \"*) val="${val#\"}"; val="${val%%\"*}" ;;
-        \'*) val="${val#\'}"; val="${val%%\'*}" ;;
-        *)    val=$(printf '%s' "$val" | sed 's/[[:space:]]#.*$//; s/^[[:space:]]*//; s/[[:space:]]*$//') ;;
-    esac
-    printf '%s' "$val"
-}
+log()  { printf '%s %s\n'  "$(date '+%H:%M:%S')" "$*"; }
+warn() { printf '%s %s\n'  "$(date '+%H:%M:%S')" "$*" >&2; }
 
-# 加载 .env 配置（compose 自己也会读 .env，此处读取用于端口检查与提示；
-# 已设置的环境变量优先）
-if [ -f .env ]; then
-    if [ -z "${EVALSCOPE_PROXY:-}" ]; then
-        EVALSCOPE_PROXY="$(read_env_value EVALSCOPE_PROXY .env)"
-        export EVALSCOPE_PROXY
-    fi
-    if [ -z "${EVALSCOPE_HOST_PORT:-}" ]; then
-        EVALSCOPE_HOST_PORT="$(read_env_value EVALSCOPE_HOST_PORT .env)"
-        export EVALSCOPE_HOST_PORT
-    fi
-    if [ -z "${EVALSCOPE_NO_PROXY:-}" ]; then
-        EVALSCOPE_NO_PROXY="$(read_env_value EVALSCOPE_NO_PROXY .env)"
-        export EVALSCOPE_NO_PROXY
-    fi
-fi
-HOST_PORT="${EVALSCOPE_HOST_PORT:-80}"
+# 宿主机端口与构建代理取 docker compose config 的输出 —— 那是 compose 自己解析完
+# .env 后的最终结果，脚本不再自己实现一套 .env 解析规则
+CFG="$(docker compose config 2>/dev/null || true)"
+BUILD_PROXY="$(printf '%s' "$CFG" | awk '/HTTP_PROXY:/{sub(/.*: *"?/,""); gsub(/"/,""); print; exit}')"
+HOST_PORT="$(printf '%s' "$CFG" | awk '/published:/{sub(/.*: *"?/,""); gsub(/"/,""); print; exit}')"
+HOST_PORT="${HOST_PORT:-80}"
 
 usage() {
     cat <<EOF
@@ -57,32 +30,25 @@ usage() {
   pip     从 PyPI 安装指定版本，版本号精确锁定（如 1.12.0）
   source  从 GitHub 源码安装，第2个参数为 git 分支/tag/commit（如 main），默认取最新代码
 
-本项目定位为**轻量文本评测部署**，pip 组件固定为:
-  perf,service,ifeval,ifbench,openai_mrcr
-组件定义在 docker-compose.yaml 的 EVALSCOPE_PACKAGES，**不接受参数覆盖**。
+组件固定为: perf,service,ifeval,ifbench,openai_mrcr
+定义在 docker-compose.yaml 的 EVALSCOPE_PACKAGES，不接受参数覆盖。
   - perf          压测 + API 客户端
   - service       Web 可视化
   - ifeval        langdetect + nltk（IFEval 指令遵循基准）
   - ifbench       emoji + syllapy + nltk（IFBench 指令遵循进阶）
   - openai_mrcr   tiktoken（OpenAI MRCR 长上下文基准）
 
-  每次执行都是重新构建镜像 + 重建容器。组件参数不参与本次部署，
-  因此同一 ref 的重复执行会命中构建缓存（源码方式首次约 12-20 分钟）。
-
-  图像 / 视频 / 代码执行 / Judge 类基准需要 torch、opencv、Docker Sandbox、
-  额外 Judge 服务，会让镜像膨胀到数 GB，本项目刻意不提供。
-  如需完整评测环境，见 README「需要完整评测环境？」一节。
+  每次执行都是重新构建镜像 + 重建容器；同一 ref 重复执行会命中构建缓存。
 
 流程:
   1. 写入 docker-compose.override.yaml（安装方式、版本/ref、镜像 tag，compose 自动合并）
   2. 重建镜像并替换容器（outputs/ 数据不受影响）
-  3. 校验容器内实际安装的版本/commit + 健康检查
+  3. 校验容器内实际安装的版本/commit
 
-可选代理: 在 .env 或环境变量设置 EVALSCOPE_PROXY=http://<host>:<port>，默认不使用代理
-          免代理地址用 EVALSCOPE_NO_PROXY=<逗号分隔>，默认 localhost,127.0.0.1
-          （供 git/pip/运行时使用，compose 从 .env 或环境变量直接读取）
+配置构建代理: 在 .env 设置 EVALSCOPE_BUILD_PROXY=http://<host>:<port>，绕过代理 EVALSCOPE_NO_PROXY=<逗号分隔地址>（仅构建期生效）
+
 端口:     容器内固定监听 80；宿主机映射端口默认 80，在 .env 中设置 EVALSCOPE_HOST_PORT 可更改
-          目标端口被外部进程占用时会在修改配置前直接报错（切换本项目版本不受影响）
+
 失败回滚: compose 校验或构建失败时自动恢复 docker-compose.override.yaml，
           运行中的旧容器不受影响，不会出现「配置指向新镜像、实际跑旧镜像」
 
@@ -94,65 +60,26 @@ usage() {
 EOF
 }
 
-# git ls-remote（带 20s 超时与 2 次重试，防止网络抖动导致脚本卡死）
-# 若配置了 EVALSCOPE_PROXY 则走代理；全部失败时返回非零
-git_lsremote() {
-    local cmd=(git) i
-    if [ -n "${EVALSCOPE_PROXY:-}" ]; then
-        cmd=(git -c http.proxy="$EVALSCOPE_PROXY" -c https.proxy="$EVALSCOPE_PROXY")
-    fi
-    for i in 1 2; do
-        timeout 20 "${cmd[@]}" ls-remote "$@" 2>/dev/null && return 0
-        sleep 2
-    done
-    return 1
-}
-
-# 将分支/tag/commit 解析为完整 sha；失败输出空（回退直接使用原始 ref）
+# 将 ref（分支/tag/commit）解析为当前 commit sha，作为构建参数传给 Dockerfile。
+# 作用：Docker 按构建参数决定缓存是否失效 —— sha 变了才重新构建，
+#       因此既保证拉到最新代码，代码没更新时又不必重复构建。
+# 输出为空表示拿不到（网络超时或 ref 不存在），由调用方报错退出。
 resolve_ref() {
-    local ref="$1" sha="" out=""
+    local ref="$1" out=""
     if [[ "$ref" =~ ^[0-9a-f]{7,40}$ ]]; then
         printf '%s' "$ref"
         return 0
     fi
-    command -v git >/dev/null 2>&1 || return 0
-    out=$(git_lsremote "$REPO_URL" "refs/heads/$ref") || return 0
-    sha=$(printf '%s' "$out" | head -1 | awk '{print $1}')
-    if [ -z "$sha" ]; then
-        out=$(git_lsremote "$REPO_URL" "refs/tags/$ref") || return 0
-        sha=$(printf '%s' "$out" | grep -v '\^{}' | head -1 | awk '{print $1}')
+    command -v git >/dev/null 2>&1 || return 1
+    if [ -n "$BUILD_PROXY" ]; then
+        out=$(git -c http.proxy="$BUILD_PROXY" -c https.proxy="$BUILD_PROXY" \
+              ls-remote "$REPO_URL" "refs/heads/$ref" "refs/tags/$ref" "refs/tags/$ref^{}" 2>/dev/null)
+    else
+        out=$(git ls-remote "$REPO_URL" "refs/heads/$ref" "refs/tags/$ref" "refs/tags/$ref^{}" 2>/dev/null)
     fi
-    if [ -z "$sha" ]; then
-        out=$(git_lsremote "$REPO_URL" "$ref") || return 0
-        sha=$(printf '%s' "$out" | head -1 | awk '{print $1}')
-    fi
-    printf '%s' "$sha"
-}
-
-# 前置端口检查：在修改任何配置之前执行，避免 compose 先停旧容器再因端口绑定失败导致服务中断
-# 空闲/被本项目容器占用（切换版本场景）→ 放行；被外部占用 → 报错返回非零
-check_port_free() {
-    local port="$1" owner="" proj=""
-    # 被某个运行中容器发布占用
-    if command -v docker >/dev/null 2>&1; then
-        owner=$(docker ps --filter "publish=$port" --format '{{.Names}}' 2>/dev/null | head -1) || owner=""
-        if [ -n "$owner" ]; then
-            proj=$(docker inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "$owner" 2>/dev/null) || proj=""
-            if [ "$proj" = "${COMPOSE_PROJECT_NAME:-$(basename "$PWD")}" ]; then
-                return 0  # 本项目容器，compose 会先停旧再起新
-            fi
-            echo "[switch] ✗ 端口 $port 已被外部容器 $owner 占用，未做任何更改" >&2
-            echo "         更换端口: 在 .env 中设置 EVALSCOPE_HOST_PORT=<其他端口> 后重试" >&2
-            return 1
-        fi
-    fi
-    # 被宿主机进程占用
-    if command -v ss >/dev/null 2>&1 && ss -Htln "sport = :$port" 2>/dev/null | grep -q .; then
-        echo "[switch] ✗ 端口 $port 已被宿主机进程占用，未做任何更改" >&2
-        echo "         更换端口: 在 .env 中设置 EVALSCOPE_HOST_PORT=<其他端口> 后重试" >&2
-        return 1
-    fi
-    return 0
+    printf '%s' "$out" | awk '$2 ~ /\^\{\}$/ {p=$1} !/\^\{\}$/ {n=$1} END {print (p?p:n)}'
+    return 0    # 必须返回 0：调用方是 RESOLVED="$(resolve_ref ...)"，
+                # 函数返回非 0 会让主流程的 set -e 在这一行直接终止，不打印任何内容。
 }
 
 case "${1:-}" in
@@ -164,38 +91,45 @@ esac
 
 # 上面的 case 已把方式参数 shift 掉，因此此处必须正好剩 1 个（版本号|git-ref）
 if [ $# -ne 1 ]; then
-    echo "[switch] ✗ 只接受 2 个参数: [方式] <版本号|git-ref>" >&2
-    echo "         组件固定在 docker-compose.yaml 的 EVALSCOPE_PACKAGES，不接受参数覆盖" >&2
+    warn "[switch] ✗ 只接受 2 个参数: [方式] <版本号|git-ref>"
+    warn "         组件固定在 docker-compose.yaml 的 EVALSCOPE_PACKAGES，不接受参数覆盖"
     usage >&2
     exit 1
 fi
 
 if [ "$METHOD" = "pip" ]; then
-    V="${1#v}"
+    V="$1"
     TAG="$V"
-    echo "[switch] 方式: pip（PyPI 安装，版本锁定）"
-    echo "[switch] 目标版本: $V"
+    log "[switch] 方式: pip（PyPI 安装，版本锁定）"
+    log "[switch] 目标版本: $V"
 else
     V="$1"
-    RESOLVED="$(resolve_ref "$V")"
-    if [ -n "$RESOLVED" ]; then
-        REF_VALUE="$RESOLVED"
-        TAG="source-${RESOLVED:0:12}"
-        echo "[switch] 方式: source（GitHub 源码安装）"
-        echo "[switch] 目标 ref: $V -> $RESOLVED"
-    else
-        REF_VALUE="$V"
-        TAG="source-${V//\//-}"
-        echo "[switch] 方式: source（GitHub 源码安装）"
-        echo "[switch] 目标 ref: $V（未能解析为 sha，若远端未变可能命中构建缓存）"
+    if ! command -v git >/dev/null 2>&1; then
+        warn "[switch] ✗ source 方式需要 git（用于查询 $V 对应的最新 commit），未做任何更改"
+        exit 1
     fi
+    t0=$(date +%s)
+    RESOLVED="$(resolve_ref "$V")"
+    log "[done] git ls-remote 解析 ref — 耗时=$(($(date +%s) - t0))s"
+    if [ -z "$RESOLVED" ]; then
+        # 拿不到 sha 就直接退出，不降级用原始 ref：
+        # 降级会让构建参数从 sha 变成 ref，击穿构建缓存触发全量重建，
+        # 而重建时容器内的 git clone 面对的是同一个网络，多半再失败一次。
+        warn "[switch] ✗ 拿不到 $V 对应的 commit，未做任何更改"
+        warn "         GitHub 直连不稳定时会超时，重试可能成功；持续失败则配置构建代理:"
+        warn "           EVALSCOPE_BUILD_PROXY=http://<host>:<port> bash deploy.sh source $V"
+        warn "         也可能是该 ref 不存在，可先确认:"
+        warn "           git ls-remote $REPO_URL | grep $V"
+        exit 1
+    fi
+    REF_VALUE="$RESOLVED"
+    TAG="source"
+    log "[switch] 方式: source（GitHub 源码安装，拉取最新）"
+    log "[switch] 目标 ref: $V -> $RESOLVED"
 fi
-echo "[switch] 镜像 tag: evalscope:$TAG"
-echo "[switch] 宿主机端口: $HOST_PORT"
-[ -n "${EVALSCOPE_PROXY:-}" ] && echo "[switch] 代理: $EVALSCOPE_PROXY" || true
-
-# 修改配置前先检查目标端口：外部占用直接报错（配置与运行中的服务均不受影响）
-check_port_free "$HOST_PORT"
+log "[switch] 镜像 tag: evalscope:$TAG"
+log "[switch] 宿主机端口: $HOST_PORT"
+[ -n "$BUILD_PROXY" ] && log "[switch] 构建代理: $BUILD_PROXY" || true
 
 # 改写 override 之前先备份：compose config 校验或构建失败时回滚，
 # 避免出现「override 指向新 tag、实际运行的却是旧镜像」的不一致状态
@@ -208,7 +142,7 @@ rollback_override() {
 
 # 生成部署状态覆盖文件：compose 会自动与 docker-compose.yaml 合并
 # 只写安装方式与版本/ref；EVALSCOPE_PACKAGES 故意不写 —— 组件固定在
-# docker-compose.yaml 单一配置点，override 不参与，保证组件无法被部署参数影响
+# docker-compose.yaml 单一配置点，override 不参与，组件无法被部署参数影响。
 # 当前方式用不到的参数写空串，不留看起来仍在使用的值
 if [ "$METHOD" = "pip" ]; then
     OVERRIDE_ARGS="        EVALSCOPE_VERSION: \"$V\"
@@ -230,66 +164,52 @@ $OVERRIDE_ARGS
 EOF
 
 # 校验合并后的 compose 配置并打印生效的部署参数（base 默认值 + 本次部署覆盖）
+_t0=$(date +%s)
+log "[run ] 校验 compose 配置"
+log "[cmd ] docker compose config"
 if ! COMPOSE_CONFIG="$(docker compose config 2>&1)"; then
+    log "[done] 校验 compose 配置 — 失败 耗时=$(($(date +%s) - _t0))s"
     rollback_override
-    echo "[switch] ✗ compose 配置校验失败，已回滚 $OVERRIDE，未做任何更改" >&2
+    warn "[switch] ✗ compose 配置校验失败，已回滚 $OVERRIDE，未做任何更改"
     printf '%s\n' "$COMPOSE_CONFIG" | tail -5 >&2
     exit 1
 fi
+log "[done] 校验 compose 配置 — 退出码=0 耗时=$(($(date +%s) - _t0))s"
 printf '%s\n' "$COMPOSE_CONFIG" | grep -E 'INSTALL_METHOD:|EVALSCOPE_VERSION:|EVALSCOPE_REF:|EVALSCOPE_PACKAGES:|image:'
-echo "[switch] compose 配置校验通过"
+log "[switch] compose 配置校验通过"
 
+_t0=$(date +%s)
+log "[run ] 构建镜像并替换容器"
+log "[cmd ] docker compose up -d --build"
 if ! docker compose up -d --build; then
+    log "[done] 构建镜像并替换容器 — 失败 耗时=$(($(date +%s) - _t0))s"
     rollback_override
-    echo "[switch] ✗ 构建/启动失败，已回滚 $OVERRIDE" >&2
-    echo "         运行中的旧容器未受影响，服务照常；修掉问题后重新执行本脚本即可" >&2
+    warn "[switch] ✗ 构建/启动失败，已回滚 $OVERRIDE"
+    warn "         运行中的旧容器未受影响，服务照常；修掉问题后重新执行本脚本即可"
     exit 1
 fi
+log "[done] 构建镜像并替换容器 — 退出码=0 耗时=$(($(date +%s) - _t0))s"
 rm -f "$BACKUP"
 
 # 校验容器内实际安装结果
 if [ "$METHOD" = "pip" ]; then
     ACTUAL=$(docker compose exec -T evalscope pip show evalscope 2>/dev/null | awk '/^Version/{print $2}') || ACTUAL=""
     if [ "$ACTUAL" = "$V" ]; then
-        echo "[switch] ✓ 完成，容器内 evalscope = $ACTUAL"
+        log "[switch] ✓ 完成，容器内 evalscope = $ACTUAL"
     else
-        echo "[switch] ✗ 版本不符: 预期 $V, 实际 ${ACTUAL:-未安装}" >&2
+        warn "[switch] ✗ 版本不符: 预期 $V, 实际 ${ACTUAL:-未安装}"
         exit 1
     fi
 else
     ACTUAL_SHA=$(docker compose exec -T evalscope git -C /opt/evalscope rev-parse HEAD 2>/dev/null) || ACTUAL_SHA=""
-    if [ -n "$RESOLVED" ]; then
-        if [ "$ACTUAL_SHA" = "$RESOLVED" ]; then
-            echo "[switch] ✓ 完成，容器内源码 commit = $ACTUAL_SHA"
-        else
-            echo "[switch] ✗ commit 不符: 预期 $RESOLVED, 实际 ${ACTUAL_SHA:-未知}" >&2
-            exit 1
-        fi
+    if [ "$ACTUAL_SHA" = "$RESOLVED" ]; then
+        log "[switch] ✓ 完成，容器内源码 commit = $ACTUAL_SHA"
     else
-        if [ -n "$ACTUAL_SHA" ] && docker compose exec -T evalscope evalscope --version >/dev/null 2>&1; then
-            echo "[switch] ✓ 完成，容器内源码 commit = $ACTUAL_SHA（ref 未解析，仅校验可运行）"
-        else
-            echo "[switch] ✗ 校验失败: 容器内 evalscope 不可用" >&2
-            exit 1
-        fi
+        warn "[switch] ✗ commit 不符: 预期 $RESOLVED, 实际 ${ACTUAL_SHA:-未知}"
+        exit 1
     fi
 fi
 
-# 健康检查：等待服务就绪并确认端口可达
-if command -v curl >/dev/null 2>&1; then
-    healthy=""
-    for _ in $(seq 1 15); do
-        if curl -sf -o /dev/null --connect-timeout 2 "http://localhost:$HOST_PORT/health"; then
-            healthy=1
-            break
-        fi
-        sleep 2
-    done
-    if [ -z "$healthy" ]; then
-        echo "[switch] ✗ 服务健康检查失败: http://localhost:$HOST_PORT/health" >&2
-        exit 1
-    fi
-    echo "[switch] ✓ 服务就绪: http://localhost:$HOST_PORT/dashboard"
-else
-    echo "[switch] ⚠ 宿主机未找到 curl，已跳过健康检查（部署已执行，但服务可用性未验证）" >&2
-fi
+# 部署即结束：容器起来了，但应用是否就绪不再验证（那会拖长脚本、也会因应用启动
+# 慢而误报失败）。地址在此打印，是否可用由使用者自己打开确认。
+log "[switch] 访问地址: http://localhost:$HOST_PORT/dashboard"

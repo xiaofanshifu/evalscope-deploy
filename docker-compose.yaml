@@ -12,18 +12,16 @@ services:
         # 唯一组件配置点：轻量文本评测固定这 5 个，不通过 deploy.sh 参数修改
         # 需要完整评测环境（图像/视频/代码执行/Judge）请见 README，改用裸机部署
         EVALSCOPE_PACKAGES: "perf,service,ifeval,ifbench,openai_mrcr"
-        # 可选代理：在 .env 或环境变量设置 EVALSCOPE_PROXY=http://<host>:<port>，默认为空（不使用代理）
-        HTTP_PROXY: "${EVALSCOPE_PROXY:-}"
-        HTTPS_PROXY: "${EVALSCOPE_PROXY:-}"
+        # 仅构建期代理：在 .env 设置 EVALSCOPE_BUILD_PROXY=http://<host>:<port>
+        # Docker 特殊 build args，不写入镜像文件系统与运行时环境（容器运行时直连）；
+        # 但会记录在镜像层历史里，docker history 可见
+        HTTP_PROXY: "${EVALSCOPE_BUILD_PROXY:-}"
+        HTTPS_PROXY: "${EVALSCOPE_BUILD_PROXY:-}"
         NO_PROXY: "${EVALSCOPE_NO_PROXY:-localhost,127.0.0.1}"
     image: "evalscope:1.12.0"
     restart: unless-stopped
     environment:
       - TZ=Asia/Shanghai
-      # 可选代理同样透传到运行时（拉模型等），默认为空
-      - HTTP_PROXY=${EVALSCOPE_PROXY:-}
-      - HTTPS_PROXY=${EVALSCOPE_PROXY:-}
-      - NO_PROXY=${EVALSCOPE_NO_PROXY:-localhost,127.0.0.1}
     ports:
       # 宿主机端口可配置：.env 中设置 EVALSCOPE_HOST_PORT（默认 80），容器内固定监听 80
       - "${EVALSCOPE_HOST_PORT:-80}:80"

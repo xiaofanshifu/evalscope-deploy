@@ -18,7 +18,8 @@ ARG EVALSCOPE_REF=main
 # 安装组件（固定在 docker-compose.yaml 的 EVALSCOPE_PACKAGES）
 ARG EVALSCOPE_PACKAGES=perf,service,ifeval,ifbench,openai_mrcr
 
-# 可选代理构建参数（默认不启用；Compose 从 EVALSCOPE_PROXY 注入，空值即无代理）
+# 构建期代理（仅构建时可见；不写入镜像文件系统与运行时环境，但会记录在镜像层历史里，
+# docker history 可见。Compose 从 EVALSCOPE_BUILD_PROXY / EVALSCOPE_NO_PROXY 注入）
 ARG HTTP_PROXY
 ARG HTTPS_PROXY
 ARG NO_PROXY
@@ -91,6 +92,12 @@ RUN set -e; \
     apt-get autoremove -y >/dev/null; \
     rm -rf /var/lib/apt/lists/*; \
     evalscope --help >/dev/null 2>&1
+
+# NER 基准（conll2003 / wnut2017 / multi_nerd 等 21 项）打分需要 seqeval，
+# 但上游 evalscope 未在任何 extra 中声明它（pyproject 与 requirements 均无，连 all 也没有），
+# 因此不能写进 EVALSCOPE_PACKAGES —— pip 对未知 extra 只静默跳过、不报错，装完仍会在运行时抛
+# ImportError。体积 48KB，纯规则打分无其它依赖，故在此显式安装。
+RUN pip install seqeval
 
 # 暴露可视化 Web 服务端口（容器内固定监听 80，宿主机映射端口由 compose 的 EVALSCOPE_HOST_PORT 配置）
 EXPOSE 80
