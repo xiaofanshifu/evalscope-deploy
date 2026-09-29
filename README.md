@@ -16,7 +16,7 @@
 - 代码执行类基准（需 Docker Sandbox）
 - Judge 模型类基准（需额外 Judge 服务）
 
-这些能力需要 torch / opencv / Docker / 额外服务，会让镜像膨胀到数 GB，与本项目定位冲突。
+这些能力需要 torch / opencv / Docker / 额外服务，会让镜像膨胀到数 GB，与本项目定位冲突。需要完整评测环境请见「需要完整评测环境？」。
 
 ## 环境要求
 
@@ -24,13 +24,82 @@
 - `source` 方式需要宿主机安装 `git`（用于查询 ref 对应的最新 commit）；未安装会直接报错退出
 - 首次构建需要访问 GitHub（source 模式）、PyPI 清华镜像、npm npmmirror 镜像
 
-## 快速开始
+---
+
+# 一、部署
+
+## 配置端口与代理
+
+两者都可跳过，用默认值即可（端口 80、直连不加代理）。**但建议部署前先看端口**——脚本不预检端口占用，冲突要到构建完成后才会报错。
+
+配置写在项目根目录的 `.env`（已入 `.gitignore`），三个键都可选：
+
+```bash
+# .env 里可写三个键
+EVALSCOPE_HOST_PORT=9000
+EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890
+EVALSCOPE_NO_PROXY=localhost,127.0.0.1
+```
+
+### 端口
+
+容器内**固定监听 80**；宿主机映射端口默认 **80**，通过 `EVALSCOPE_HOST_PORT` 更改。
+
+```bash
+# 示例 9000
+EVALSCOPE_HOST_PORT=9000
+```
+
+配置后访问 `http://localhost:9000/dashboard`；不配置则 `http://localhost/dashboard`。
+
+脚本**不预检端口占用**，也不会因为端口冲突而回滚。若目标端口被外部进程或容器占用，绑定失败由 `docker compose up` 报出（`port is already allocated`）。此时**镜像已构建完成**，`deploy.sh` 会打印镜像 tag、构建时间、commit 和组件列表，并提示处理端口后执行 `docker compose up -d` 即可，**无需重新构建**。
+
+端口冲突时旧的容器通常已经停掉（compose 先停旧再起新），所以服务会中断，与升级/降级是否动过端口无关。
+
+因此部署前请自行确认端口空闲，或在 `.env` 里改 `EVALSCOPE_HOST_PORT`。
+
+服务为纯 HTTP，无 TLS。如需 HTTPS 请自行在前置反代（nginx/caddy）与证书。
+
+### 构建代理
+
+代理**只用于构建镜像**（git clone / pip / apt / npm）。容器运行时不含任何代理变量，为直连。
+
+在 `.env` 里配置：
+
+```bash
+EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890
+```
+
+或临时指定（优先级高于 `.env`）：
+
+```bash
+EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890 ./deploy.sh source main
+```
+
+这是 Docker 的特殊 build args，不写入镜像文件系统与运行时环境；但构建参数会记录在镜像层历史里，`docker history` 可见。
+
+配置代理时，需要绕过代理地址用 `EVALSCOPE_NO_PROXY`（逗号分隔），默认 `localhost,127.0.0.1`。
+
+`.env` 格式固定为 `KEY=value`（见上方示例）。取值一律由 `docker compose` 解析，`deploy.sh` 直接复用 `docker compose config` 的结果，不自己实现 `.env` 解析规则——因此 `docker compose` 支持的写法（行内注释、单/双引号、`export` 前缀）在这里同样有效。
+
+GitHub 直连不稳定时，`git ls-remote` 可能长时间挂起直到 git 自身超时，随后脚本报错退出、不做任何更改。该命令**没有重试也没有显式超时**，所以单次抖动就会导致部署失败——遇到这种情况直接重试，或配置代理。
+
+## 部署命令
 
 ```bash
 ./deploy.sh source main
 ```
 
-访问 `http://<host>:<port>/dashboard`（端口见「端口配置」）。
+脚本执行流程：写入 override → 校验 compose 配置 → 构建镜像 → 替换容器 → **校验容器内实际版本/commit**。
+
+校验通过即部署完成，末行打印访问地址：
+
+```
+[switch] ✓ 完成，容器内源码 commit = 5e1a61b...
+[switch] 访问地址: http://localhost:9000/dashboard
+```
+
+看到 `✓ 完成` 即成功。校验不符会报错退出并提示需人工排查（见「构建与回滚」）。
 
 ```bash
 ./deploy.sh -h          # 帮助
@@ -53,11 +122,15 @@ pip 组件**固定**为 6 个，定义在 `docker-compose.yaml` 的 `EVALSCOPE_P
 
 > 注意：`all` 不是「全部」。上游 `pyproject.toml` 里 `all` 只等于 7 个 extra（含 torch、diffusers、opencv、langchain），会拉数 GB 依赖。
 
+---
+
+# 二、使用
+
 ## 可用数据集
 
 除需 LLM Judge 的基准外，其余均零运行时依赖：无需 Sandbox、user_model 或任何外部服务。
 
-### 推荐清单（21 项）
+### 推荐清单
 
 横向对比通用选型，覆盖 7 个维度、全部确定性打分：
 
@@ -88,7 +161,6 @@ mmlu_pro,mmlu,gpqa_diamond,bbh,musr,math_500,gsm8k,process_bench,aime26,hmmt26,i
 | 长文检索 | `openai_mrcr` | 2,400 |
 | 工具调用 | `tool_bench` | 2,369 |
 | 工具调用 | `general_fc` | 2,000 |
-
 
 ### 完整清单（按能力分类）
 
@@ -143,7 +215,7 @@ longbench_v2              503    openai_mrcr               2400
 locomo                    1986   needle_haystack           按 context_lengths × depth 生成
 ```
 
-三者的长度可控性完全不同，跑之前先读「长上下文」一节：`longbench_v2` 无上限参数且危险样本藏在 `short` 子集，`openai_mrcr` 只能按固定 8 档筛选，只有 `needle_haystack` 能精确指定。
+三者的长度可控性差别很大，详见「长上下文」。
 
 **中文**
 
@@ -186,22 +258,6 @@ triviaqa_indic 197384   gsm8k_indic  27670
 data_collection   general_mcq   general_qa
 ```
 
-### 不可用数据集
-
-| 类别 | 数据集 | 缺什么 |
-|---|---|---|
-| 需额外 extra | `multi_if` `refcoco` | 对应 pip extra（`multi_if` 缺 `pythainlp`；`refcoco` 缺 `pycocoevalcap`） |
-| 需 Judge | `mt_bench` `simple_qa` `chinese_simpleqa` `alpaca_eval` `drivel_writing` `hle` `plawbench` `minerva_math` `imo_answerbench` `docmath` `cl_bench` `aa_lcr` `frames` `longmemeval` `one_million_bench` `health_bench` `arena_hard` `general_arena` | Judge 服务（后两项的 pip 依赖镜像已内置，卡点是要算 win_rate 必须有 Judge） |
-| 需 Sandbox | `live_code_bench` `mbpp` `mbpp_plus` `bigcodebench` `bigcodebench_hard` `multiple_humaneval` `multiple_mbpp` | Docker |
-| 需 GitHub 源码包 | `perspective_gap_prompt_writing` `perspective_gap_role_assignment` | 打分依赖装自个人仓库 `WhymustIhaveaname/PerspectiveGap`，非 PyPI 包，会给构建引入 GitHub 依赖 |
-| 非文本 | `seed_tts_eval` | 音频模型 |
-
-`olympiad_bench` 可用——它要的 `latex2sympy2_extended` 是上游核心依赖，镜像已内置。
-
-### 装 extra 时注意名字
-
-本文提到的数据集名 ≠ pip extra 名，两处对不上，**照抄数据集名会 pip 报错**：`swe_bench_lite` / `swe_bench_verified` / `swe_bench_verified_mini` 对应 extra `swe_bench`，`wmt24pp` 对应 extra `wmt`。
-
 ## 评测协议建议
 
 ### 通用设置
@@ -223,8 +279,8 @@ Max Tokens     16384（长上下文批次用 8192）
 
 | 数据集 | 语料 | 长度可控 |
 |---|---|---|
-| `longbench_v2` | 真实长文档 | ❌ adapter 无上限参数，子集名不代表长度 |
-| `openai_mrcr` | 真实多轮对话 | ❌ 只能按固定档位筛选；下载需整仓拉取（GB 级） |
+| `longbench_v2` | 真实长文档 | ❌ adapter 无上限参数，子集名不代表长度，危险样本藏在 `short` 子集 |
+| `openai_mrcr` | 真实多轮对话 | ❌ 只能按固定 8 档筛选；下载需整仓拉取（GB 级） |
 | `needle_haystack` | 合成（自拼散文 + 插 needle） | ✅ 唯一能精确指定 |
 
 `needle_haystack` 配置示例（`min=max=L, num_intervals=1` 即恰好 L；`num_intervals` 走等差插值，只能取等差序列）：
@@ -294,21 +350,56 @@ Max Tokens     16384（长上下文批次用 8192）
 - 答案解析用 EvalScope 默认，不做修改
 - 记录 EvalScope commit SHA（`deploy.sh` 会把 `main` 解析成完整 SHA 并写入镜像 tag），不要用 `main` 字样
 
-## 需要完整评测环境？
+## 数据持久化
 
-图像、视频、代码执行、Judge 类基准需要 torch、opencv、Docker Sandbox、额外 Judge 服务，会让镜像膨胀到数 GB。
+- `./outputs/` 挂载到容器内，评测结果不会因切换方式/版本丢失
+- 缓存使用 Docker named volume，避免重复下载
 
-**建议在独立服务器上直接安装 EvalScope，不用容器**：
+**警告**：不要使用 `docker compose down -v`，`-v` 会连缓存卷一起删除。
+
+---
+
+# 三、运维
+
+## 版本切换与校验
+
+切换版本/方式就是再跑一次 `./deploy.sh`：
 
 ```bash
-# 裸机 / 虚拟机（系统安装 Docker，即有 sandbox）
-pip install "evalscope[all,ifeval,ifbench,sandbox,openai_mrcr,needle_haystack]"
-evalscope service --host 0.0.0.0 --port 9000 --outputs ./outputs
+# 部署/切换
+./deploy.sh source main
+./deploy.sh 1.12.0
+
+# 启动/停止
+docker compose up -d
+docker compose down
+
+# 校验
+docker compose exec -T evalscope pip show evalscope
+curl "http://localhost:${EVALSCOPE_HOST_PORT:-80}/health"
+
+# 查看生效配置
+docker compose config | grep -E 'EVALSCOPE_PACKAGES|image:'
 ```
 
-裸机部署的好处：系统 Docker 直接可用，Sandbox 无需挂 socket 或另起远程 sandbox 服务，省掉容器方案里最麻烦的一环。
+```bash
+# 查看安装结果
+docker compose exec -T evalscope pip show evalscope                    # pip 方式
+docker compose exec -T evalscope git -C /opt/evalscope log -1           # source 方式
 
-`all` 会拉入 torch / torchvision / diffusers / opencv / sentence-transformers / langchain / OpenCompass / VLMEvalKit 等，镜像或环境数 GB 级，适合一次性搭建完整环境。
+# 查看运行状态
+docker compose ps
+docker images | grep evalscope
+
+# 生效的部署参数
+docker compose config | grep -E 'INSTALL_METHOD:|EVALSCOPE_VERSION:|EVALSCOPE_REF:|EVALSCOPE_PACKAGES:|image:'
+```
+
+构建反复失败时，可清除构建缓存后重试：`docker builder prune --all --force`。该命令只清构建缓存，不影响运行中的容器、镜像与数据卷，但下次构建会全量重跑。
+
+脚本每次执行后会自动校验版本/commit，不符即报错退出。容器起来了不代表应用已就绪，服务是否可用需自行用上面的命令确认。
+
+注意：source 模式下 `pip show evalscope` 显示 `0.0.0.dev0` 属正常（开发版），以 git commit 为准。
 
 ## 实现原理
 
@@ -361,80 +452,7 @@ source 模式先用 `git ls-remote` 将 ref 解析为远端最新 commit sha 并
 
 依赖中存在仅提供 sdist 的包（如 polygon3），构建时会临时安装编译链、安装完成即清除，不增加镜像体积。
 
-## 端口配置
-
-容器内**固定监听 80**；宿主机映射端口默认 **80**，通过 `.env` 配置：
-
-```bash
-# 示例 9000
-EVALSCOPE_HOST_PORT=9000
-```
-
-配置后访问 `http://localhost:9000/dashboard`；不配置则 `http://localhost/dashboard`。
-
-脚本**不预检端口占用**，也不会因为端口冲突而回滚。若目标端口被外部进程或容器占用，绑定失败由 `docker compose up` 报出（`port is already allocated`）。此时**镜像已构建完成**，`deploy.sh` 会打印镜像 tag、构建时间、commit 和组件列表，并提示处理端口后执行 `docker compose up -d` 即可，**无需重新构建**（`deploy.sh` 把 `build` 和 `up -d` 分成两步就是为了区分这种失败与构建失败）。
-
-端口冲突时旧的容器通常已经停掉（compose 先停旧再起新），所以服务会中断，与升级/降级是否动过端口无关。
-
-因此部署前请自行确认端口空闲，或在 `.env` 里改 `EVALSCOPE_HOST_PORT`。
-
-服务为纯 HTTP，无 TLS。如需 HTTPS 请自行在前置反代（nginx/caddy）与证书。
-
-## 构建期代理
-
-代理**只用于构建镜像**（git clone / pip / apt / npm）。容器运行时不含任何代理变量，为直连。
-
-在 `.env` 里配置：
-
-```bash
-EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890
-```
-
-或临时指定（优先级高于 `.env`）：
-
-```bash
-EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890 ./deploy.sh source main
-```
-
-这是 Docker 的特殊 build args，不写入镜像文件系统与运行时环境；但构建参数会记录在镜像层历史里，`docker history` 可见。
-
-配置代理时，需要绕过代理地址用 `EVALSCOPE_NO_PROXY`（逗号分隔），默认 `localhost,127.0.0.1`：
-
-```bash
-# .env 里可写三个键
-EVALSCOPE_HOST_PORT=9000
-EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890
-EVALSCOPE_NO_PROXY=localhost,127.0.0.1
-```
-
-`.env` 格式固定为 `KEY=value`（见上方示例）。取值一律由 `docker compose` 解析，`deploy.sh` 直接复用 `docker compose config` 的结果，不自己实现 `.env` 解析规则——因此 `docker compose` 支持的写法（行内注释、单/双引号、`export` 前缀）在这里同样有效。
-
-GitHub 直连不稳定时，`git ls-remote` 可能长时间挂起直到 git 自身超时，随后脚本报错退出、不做任何更改。该命令**没有重试也没有显式超时**，所以单次抖动就会导致部署失败——遇到这种情况直接重试，或配置代理。
-
-## 验证与运维
-
-```bash
-# 查看安装结果
-docker compose exec -T evalscope pip show evalscope                    # pip 方式
-docker compose exec -T evalscope git -C /opt/evalscope log -1           # source 方式
-
-# 查看运行状态
-docker compose ps
-docker images | grep evalscope
-
-# 生效的部署参数
-docker compose config | grep -E 'INSTALL_METHOD:|EVALSCOPE_VERSION:|EVALSCOPE_REF:|EVALSCOPE_PACKAGES:|image:'
-```
-
-**警告**：不要使用 `docker compose down -v`，`-v` 会连缓存卷一起删除。
-
-构建反复失败时，可清除构建缓存后重试：`docker builder prune --all --force`。该命令只清构建缓存，不影响运行中的容器、镜像与数据卷，但下次构建会全量重跑。
-
-脚本每次执行后会自动校验版本/commit，不符即报错退出。容器起来了不代表应用已就绪，服务是否可用需自行用上面的命令确认。
-
-注意：source 模式下 `pip show evalscope` 显示 `0.0.0.dev0` 属正常（开发版），以 git commit 为准。
-
-### 镜像标识
+## 镜像标识
 
 ```
 evalscope:<版本号>            # pip 方式，如 evalscope:1.12.0
@@ -454,7 +472,7 @@ docker inspect evalscope:source-main \
 
 镜像还带 OCI LABEL（`org.opencontainers.image.version` / `.revision` / `io.evalscope.packages` 等），可用 `docker image inspect` 读取。
 
-### 构建与回滚
+## 构建与回滚
 
 组件固定为轻量集，不含 torch 等重型依赖。`all` 那套会拉入数 GB 依赖，本项目不使用。
 
@@ -472,29 +490,41 @@ docker inspect evalscope:source-main \
 
 版本/commit 校验不通过时**不回滚**——此时容器和 override 都已指向新镜像，回滚配置也修不了已在跑的内容。脚本会把当前状态打印出来提示需人工介入。
 
-## 常用命令
+---
+
+# 四、参考
+
+## 不可用数据集
+
+| 类别 | 数据集 | 缺什么 |
+|---|---|---|
+| 需额外 extra | `multi_if` `refcoco` | 对应 pip extra（`multi_if` 缺 `pythainlp`；`refcoco` 缺 `pycocoevalcap`） |
+| 需 Judge | `mt_bench` `simple_qa` `chinese_simpleqa` `alpaca_eval` `drivel_writing` `hle` `plawbench` `minerva_math` `imo_answerbench` `docmath` `cl_bench` `aa_lcr` `frames` `longmemeval` `one_million_bench` `health_bench` `arena_hard` `general_arena` | Judge 服务（后两项的 pip 依赖镜像已内置，卡点是要算 win_rate 必须有 Judge） |
+| 需 Sandbox | `live_code_bench` `mbpp` `mbpp_plus` `bigcodebench` `bigcodebench_hard` `multiple_humaneval` `multiple_mbpp` | Docker |
+| 需 GitHub 源码包 | `perspective_gap_prompt_writing` `perspective_gap_role_assignment` | 打分依赖装自个人仓库 `WhymustIhaveaname/PerspectiveGap`，非 PyPI 包，会给构建引入 GitHub 依赖 |
+| 非文本 | `seed_tts_eval` | 音频模型 |
+
+`olympiad_bench` 可用——它要的 `latex2sympy2_extended` 是上游核心依赖，镜像已内置。
+
+### 装 extra 时注意名字
+
+本文提到的数据集名 ≠ pip extra 名，两处对不上，**照抄数据集名会 pip 报错**：`swe_bench_lite` / `swe_bench_verified` / `swe_bench_verified_mini` 对应 extra `swe_bench`，`wmt24pp` 对应 extra `wmt`。
+
+## 需要完整评测环境？
+
+图像、视频、代码执行、Judge 类基准需要 torch、opencv、Docker Sandbox、额外 Judge 服务，会让镜像膨胀到数 GB。
+
+**建议在独立服务器上直接安装 EvalScope，不用容器**：
 
 ```bash
-# 部署/切换
-./deploy.sh source main
-./deploy.sh 1.12.0
-
-# 启动/停止
-docker compose up -d
-docker compose down
-
-# 校验
-docker compose exec -T evalscope pip show evalscope
-curl "http://localhost:${EVALSCOPE_HOST_PORT:-80}/health"
-
-# 查看生效配置
-docker compose config | grep -E 'EVALSCOPE_PACKAGES|image:'
+# 裸机 / 虚拟机（系统安装 Docker，即有 sandbox）
+pip install "evalscope[all,ifeval,ifbench,sandbox,openai_mrcr,needle_haystack]"
+evalscope service --host 0.0.0.0 --port 9000 --outputs ./outputs
 ```
 
-## 数据持久化
+裸机部署的好处：系统 Docker 直接可用，Sandbox 无需挂 socket 或另起远程 sandbox 服务，省掉容器方案里最麻烦的一环。
 
-- `./outputs/` 挂载到容器内，评测结果不会因切换方式/版本丢失
-- 缓存使用 Docker named volume，避免重复下载
+`all` 会拉入 torch / torchvision / diffusers / opencv / sentence-transformers / langchain / OpenCompass / VLMEvalKit 等，镜像或环境数 GB 级，适合一次性搭建完整环境。
 
 ## 常见问题
 
