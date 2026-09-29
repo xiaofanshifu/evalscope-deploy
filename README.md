@@ -27,15 +27,15 @@
 ## 快速开始
 
 ```bash
-bash deploy.sh source main
+./deploy.sh source main
 ```
 
 访问 `http://<host>:<port>/dashboard`（端口见「端口配置」）。
 
 ```bash
-bash deploy.sh -h          # 帮助
-bash deploy.sh source main # 源码最新版
-bash deploy.sh 1.12.0      # pip 版
+./deploy.sh -h          # 帮助
+./deploy.sh source main # 源码最新版
+./deploy.sh 1.12.0      # pip 版
 ```
 
 ## 组件说明
@@ -143,7 +143,7 @@ longbench_v2              503    openai_mrcr               2400
 locomo                    1986   needle_haystack           按 context_lengths × depth 生成
 ```
 
-三者的长度可控性完全不同，跑之前先读「长上下文的致命前提」一节：`longbench_v2` 无上限参数且危险样本藏在 `short` 子集，`openai_mrcr` 只能按固定 8 档筛选，只有 `needle_haystack` 能精确指定。
+三者的长度可控性完全不同，跑之前先读「长上下文」一节：`longbench_v2` 无上限参数且危险样本藏在 `short` 子集，`openai_mrcr` 只能按固定 8 档筛选，只有 `needle_haystack` 能精确指定。
 
 **中文**
 
@@ -315,11 +315,13 @@ evalscope service --host 0.0.0.0 --port 9000 --outputs ./outputs
 所有切换本质都是**重新构建 Docker 镜像**，构建时按参数执行 pip 安装。
 
 ```
-bash deploy.sh [方式] <版本号|git-ref>
+./deploy.sh [方式] <版本号|git-ref>
     ↓
 写入 docker-compose.override.yaml（安装方式、版本/ref、镜像 tag）
     ↓
-docker compose up -d --build
+docker compose build
+    ↓
+docker compose up -d
     ↓
 Dockerfile 按 INSTALL_METHOD 执行:
   pip    → pip install "evalscope[perf,service,ifeval,ifbench,openai_mrcr]==<版本号>"
@@ -353,8 +355,8 @@ source 模式先用 `git ls-remote` 将 ref 解析为远端最新 commit sha 并
 
 | 类型 | 镜像源 | 配置位置 |
 |------|--------|----------|
-| **apt 系统源** | 阿里云 | Dockerfile 中 `sed -i 's/deb.debian.org/mirrors.aliyun.com/g'` |
-| **pip 源** | 清华 | Dockerfile 中 `pip config set global.index-url https://pypi.tuna.tsinghua.edu.cn/simple` |
+| **apt 系统源** | 阿里云 | Dockerfile 中 `sed -i` 替换 debian.sources 中的 deb.debian.org |
+| **pip 源** | 清华 | Dockerfile 中 `pip config set global.index-url` |
 | **npm / Node 源** | npmmirror | Dockerfile 中 npm registry 设置 + Node 二进制下载地址 |
 
 依赖中存在仅提供 sdist 的包（如 polygon3），构建时会临时安装编译链、安装完成即清除，不增加镜像体积。
@@ -391,7 +393,7 @@ EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890
 或临时指定（优先级高于 `.env`）：
 
 ```bash
-EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890 bash deploy.sh source main
+EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890 ./deploy.sh source main
 ```
 
 这是 Docker 的特殊 build args，不写入镜像文件系统与运行时环境；但构建参数会记录在镜像层历史里，`docker history` 可见。
@@ -474,8 +476,8 @@ docker inspect evalscope:source-main \
 
 ```bash
 # 部署/切换
-bash deploy.sh source main
-bash deploy.sh 1.12.0
+./deploy.sh source main
+./deploy.sh 1.12.0
 
 # 启动/停止
 docker compose up -d
@@ -483,7 +485,7 @@ docker compose down
 
 # 校验
 docker compose exec -T evalscope pip show evalscope
-curl http://localhost:9000/health
+curl "http://localhost:${EVALSCOPE_HOST_PORT:-80}/health"
 
 # 查看生效配置
 docker compose config | grep -E 'EVALSCOPE_PACKAGES|image:'

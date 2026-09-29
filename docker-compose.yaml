@@ -3,19 +3,15 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      # 默认部署值；实际部署的版本/ref/组件/镜像 tag 由 deploy.sh 写入
-      # docker-compose.override.yaml（compose 自动合并），本文件不被脚本修改
+      # 默认部署值；实际版本/ref/tag 由 deploy.sh 写入 docker-compose.override.yaml
+      # （compose 自动合并），本文件不被脚本修改
       args:
         INSTALL_METHOD: "pip"
         EVALSCOPE_VERSION: "1.12.0"
         EVALSCOPE_REF: "main"
-        # 唯一组件配置点：轻量文本评测固定这 6 个，不通过 deploy.sh 参数修改
-        # needle_haystack 只含 matplotlib + seaborn（画热力图用），无重型依赖
-        # 需要完整评测环境（图像/视频/代码执行/Judge）请见 README，改用裸机部署
+        # 唯一组件配置点，不通过 deploy.sh 参数修改（needle_haystack 仅含 matplotlib+seaborn）
         EVALSCOPE_PACKAGES: "perf,service,ifeval,ifbench,openai_mrcr,needle_haystack"
-        # 仅构建期代理：在 .env 设置 EVALSCOPE_BUILD_PROXY=http://<host>:<port>
-        # Docker 特殊 build args，不写入镜像文件系统与运行时环境（容器运行时直连）；
-        # 但会记录在镜像层历史里，docker history 可见
+        # 仅构建期代理：Docker 特殊 build args，容器运行时直连；会记录在镜像层历史
         HTTP_PROXY: "${EVALSCOPE_BUILD_PROXY:-}"
         HTTPS_PROXY: "${EVALSCOPE_BUILD_PROXY:-}"
         NO_PROXY: "${EVALSCOPE_NO_PROXY:-localhost,127.0.0.1}"
