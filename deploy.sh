@@ -23,8 +23,8 @@ HOST_PORT="${HOST_PORT:-80}"
 
 usage() {
     cat <<EOF
-用法: $(basename "$0") [方式] <版本号|git-ref>
-       $(basename "$0") -h | --help
+用法: ./$(basename "$0") [方式] <版本号|git-ref>
+       ./$(basename "$0") -h | --help
 
 方式（首参，可省略，默认 pip）:
   pip     从 PyPI 安装指定版本，版本号精确锁定（如 1.12.0）
@@ -39,12 +39,12 @@ usage() {
 端口: 容器内固定 80；宿主机端口 .env 设 EVALSCOPE_HOST_PORT（默认 80）
 
 示例:
-  $(basename "$0") source main            # 源码安装 main 分支最新代码
-  $(basename "$0") source v1.10.0         # 源码安装指定 tag/commit
-  $(basename "$0") 1.12.0                 # 方式可省略，默认为 pip
-  $(basename "$0") pip 1.12.0             # pip + 显式方式
-  EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890 $(basename "$0") source main
-                                          # 临时指定构建代理（优先于 .env）
+  ./$(basename "$0") source main            # 源码安装 main 分支最新代码
+  ./$(basename "$0") source v1.10.0         # 源码安装指定 tag/commit
+  ./$(basename "$0") 1.12.0                 # 方式可省略，默认为 pip
+  ./$(basename "$0") pip 1.12.0             # pip + 显式方式
+  EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890 ./$(basename "$0") source main
+                                            # 临时指定构建代理（优先于 .env）
 EOF
 }
 
@@ -111,7 +111,7 @@ else
         # 而重建时容器内的 git clone 面对的是同一个网络，多半再失败一次。
         warn "[switch] ✗ 拿不到 $V 对应的 commit，未做任何更改"
         warn "         GitHub 直连不稳定时会超时，重试可能成功；持续失败则配置构建代理:"
-        warn "           EVALSCOPE_BUILD_PROXY=http://<host>:<port> bash deploy.sh source $V"
+        warn "           EVALSCOPE_BUILD_PROXY=http://<host>:<port> ./deploy.sh source $V"
         warn "         也可能是该 ref 不存在，可先确认:"
         warn "           git ls-remote $REPO_URL | grep $V"
         exit 1

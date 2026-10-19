@@ -23,6 +23,7 @@
 - Docker Engine + Compose v2 插件（`docker compose version` 可验证）
 - `source` 方式需要宿主机安装 `git`（用于查询 ref 对应的最新 commit）；未安装会直接报错退出
 - 首次构建需要访问 GitHub（source 模式）、PyPI 清华镜像、npm npmmirror 镜像
+- 脚本已标记可执行位；若因解压/拷贝丢失执行权限导致 `Permission denied`，执行 `chmod +x deploy.sh run_prefetch.sh`
 
 ---
 
