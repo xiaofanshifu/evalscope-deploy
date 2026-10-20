@@ -259,18 +259,68 @@ triviaqa_indic 197384   gsm8k_indic  27670
 data_collection   general_mcq   general_qa
 ```
 
+## 评测命令（CLI）
+
+除 Web 页面外，也可直接用 CLI 提交评测任务。以下命令在容器内执行，先进入容器：
+
+```bash
+docker compose exec evalscope bash
+```
+
+### 最小可运行命令（API 模型）
+
+```bash
+EVALSCOPE_LANGUAGE=zh \
+evalscope eval \
+  --model Qwen3.8-27B \
+  --api-url http://192.168.110.224:8000/v1 \
+  --datasets mmlu
+```
+
+### 常用参数完整模板
+
+```bash
+EVALSCOPE_LANGUAGE=zh \
+evalscope eval \
+  --model Qwen3.8-27B \
+  --model-id Qwen3.8-27B-demo \
+  --api-url http://192.168.110.224:8000/v1 \
+  --api-key EMPTY \
+  --eval-type openai_api \
+  --datasets mmlu_pro mmlu gpqa_diamond bbh musr math_500 gsm8k process_bench \
+             aime26 hmmt26 ifeval ifbench truthful_qa ceval cmmlu cmath \
+             arc_agi_2 longbench_v2 openai_mrcr tool_bench general_fc \
+  --limit 20 \
+  --repeats 2 \
+  --eval-batch-size 10 \
+  --generation-config '{"temperature":0.8,"top_p":0.95,"max_tokens":16384,"timeout":1800,"retries":5,"retry_interval":10,"stream":true,"seed":42,"reasoning_effort":"high"}' \
+  --work-dir /workspace/outputs/qwen38_common_demo \
+  --no-timestamp \
+  --enable-progress-tracker \
+  --ignore-errors \
+  --seed 42
+```
+
+对应关系：
+
+| 参数 | 作用 |
+|---|---|
+| `--model-id` | 报告里展示的模型名 |
+| `--api-key` | API 密钥，本地服务通常传 `EMPTY` |
+| `--eval-type` | 评测类型，可省略，显式指定更清晰 |
+| `--limit` | 每个 subset 取前 N 条；`--limit 0.1` 表示取 10% |
+| `--repeats` | 每个样本重复推理次数 |
+| `--eval-batch-size` | API 模式下的并发请求数 |
+| `--generation-config` | 采样、超时、重试、流式、reasoning 参数 |
+| `--work-dir --no-timestamp` | 固定输出目录，方便脚本管理 |
+| `--enable-progress-tracker` | 写入 `progress.json`，Web 服务可查询进度 |
+| `--ignore-errors` | 单条样本失败不终止整个任务 |
+| `--seed` | 随机种子，默认 42 |
+| `--use-cache` | 复用旧目录里的 predictions / reviews（复用已完成结果，继续跑剩余数据集） |
+
+> `Temperature=0` 时不要开重复次数——重复多次结果几乎一致，只浪费请求量。仅在用 `Temperature≠0` 测采样稳定性时才对小数据集重复。
+
 ## 评测协议建议
-
-### 通用设置
-
-```
-Temperature    0
-Top P          1
-Max Tokens     16384（长上下文批次用 8192）
-重复次数       1
-```
-
-> 注意：`Temperature=0` 时不要开重复次数——重复多次结果几乎一致，只浪费请求量。仅在用 `Temperature=1` 测采样稳定性时才对小数据集重复 3 次。
 
 ### 长上下文
 
