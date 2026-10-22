@@ -67,6 +67,8 @@ pip 组件**固定**为 6 个，定义在 `docker-compose.yaml` 的 `EVALSCOPE_P
 
 ```text
 gsm8k cmath truthful_qa ifeval mmlu ceval cmmlu bbh mmlu_pro general_fc ifbench math_500 tool_bench musr process_bench gpqa_diamond openai_mrcr longbench_v2 aime26 hmmt26 arc_agi_2
+
+mmlu_pro cmmlu bbh musr math_500 ifbench gpqa_diamond longbench_v2
 ```
 
 ### 3.1.2 完整清单（按能力分类）
