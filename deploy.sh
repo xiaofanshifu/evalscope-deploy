@@ -28,10 +28,10 @@ usage() {
 
 方式（首参，可省略，默认 pip）:
   pip     从 PyPI 安装指定版本，版本号精确锁定（如 1.12.0）
-  source  从 GitHub 源码安装，第2个参数为 git 分支/tag/commit（如 main），默认取最新代码
+  source  从 GitHub 源码安装，第2个参数为 git 分支/tag/commit（如 main、v1.10.0、87b14b8）
 
 组件固定为 perf,service,ifeval,ifbench,openai_mrcr,needle_haystack
-（定义在 docker-compose.yaml 的 EVALSCOPE_PACKAGES，不接受参数覆盖）
+（定义在 docker-compose.yaml 的 EVALSCOPE_PACKAGES）
 
 配置构建代理: .env 设 EVALSCOPE_BUILD_PROXY=http://<host>:<port>
               绕过代理: EVALSCOPE_NO_PROXY=<逗号分隔地址>
@@ -40,7 +40,8 @@ usage() {
 
 示例:
   ./$(basename "$0") source main            # 源码安装 main 分支最新代码
-  ./$(basename "$0") source v1.10.0         # 源码安装指定 tag/commit
+  ./$(basename "$0") source v1.10.0         # 源码安装指定 tag
+  ./$(basename "$0") source 87b14b8         # 源码安装指定 commit
   ./$(basename "$0") 1.12.0                 # 方式可省略，默认为 pip
   ./$(basename "$0") pip 1.12.0             # pip + 显式方式
   EVALSCOPE_BUILD_PROXY=http://192.168.110.99:7890 ./$(basename "$0") source main
@@ -86,7 +87,7 @@ esac
 
 if [ $# -ne 1 ]; then
     warn "[switch] ✗ 只接受 2 个参数: [方式] <版本号|git-ref>"
-    warn "         组件固定在 docker-compose.yaml 的 EVALSCOPE_PACKAGES，不接受参数覆盖"
+    warn "         组件固定在 docker-compose.yaml 的 EVALSCOPE_PACKAGES"
     usage >&2
     exit 1
 fi
