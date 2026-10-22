@@ -1,0 +1,8 @@
+# 构建上下文排除项：Dockerfile 不 COPY 任何项目文件，排除后仅减少上下文传输
+.git
+.env
+.env.*
+outputs/
+prefetch.log
+*.log
+docker-compose.override.yaml

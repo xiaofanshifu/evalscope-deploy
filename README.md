@@ -66,7 +66,7 @@ pip 组件**固定**为 6 个，定义在 `docker-compose.yaml` 的 `EVALSCOPE_P
 横向对比通用选型，覆盖 7 个维度、全部确定性打分；样本量见 3.1.2。可直接复制到 `--datasets`：
 
 ```text
-mmlu_pro,mmlu,gpqa_diamond,bbh,musr,math_500,gsm8k,process_bench,aime26,hmmt26,ifeval,ifbench,truthful_qa,ceval,cmmlu,cmath,arc_agi_2,longbench_v2,openai_mrcr,tool_bench,general_fc
+gsm8k cmath truthful_qa ifeval mmlu ceval cmmlu bbh mmlu_pro general_fc ifbench math_500 tool_bench musr process_bench gpqa_diamond openai_mrcr longbench_v2 aime26 hmmt26 arc_agi_2
 ```
 
 ### 3.1.2 完整清单（按能力分类）
@@ -136,10 +136,8 @@ evalscope eval \
   --api-url http://192.168.110.224:8000/v1 \
   --api-key EMPTY \
   --eval-type openai_api \
-  --datasets mmlu_pro mmlu gpqa_diamond bbh musr math_500 gsm8k process_bench \
-             aime26 hmmt26 ifeval ifbench truthful_qa ceval cmmlu cmath \
-             arc_agi_2 longbench_v2 openai_mrcr tool_bench general_fc \
-  --limit 20 \
+  --datasets gsm8k cmath truthful_qa ifeval mmlu ceval cmmlu bbh mmlu_pro general_fc ifbench math_500 tool_bench musr process_bench gpqa_diamond openai_mrcr longbench_v2 aime26 hmmt26 arc_agi_2 \
+  --limit 50 \
   --repeats 2 \
   --eval-batch-size 10 \
   --generation-config '{"temperature":0.8,"top_p":0.95,"max_tokens":16384,"timeout":1800,"retries":5,"retry_interval":10,"stream":true,"seed":42,"reasoning_effort":"high"}' \
