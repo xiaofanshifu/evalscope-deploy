@@ -17,7 +17,7 @@ services:
         NO_PROXY: "${EVALSCOPE_NO_PROXY:-localhost,127.0.0.1}"
     image: "evalscope:1.12.0"
     restart: unless-stopped
-    # 服务启动约 4-6 秒，start_period 内失败不计入重试
+    # 服务启动 5 秒左右，start_period 内失败不计入重试
     healthcheck:
       test: ["CMD", "curl", "-fsS", "http://127.0.0.1/health"]
       interval: 30s

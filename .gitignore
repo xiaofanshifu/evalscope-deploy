@@ -1,3 +1,2 @@
 .env
 docker-compose.override.yaml
-AGENTS.md
