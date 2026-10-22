@@ -223,7 +223,9 @@ if [ "$METHOD" = "pip" ]; then
     fi
 else
     ACTUAL_SHA=$(docker compose exec -T evalscope git -C /opt/evalscope rev-parse HEAD 2>/dev/null) || ACTUAL_SHA=""
-    if [ "$ACTUAL_SHA" = "$RESOLVED" ]; then
+    # RESOLVED 可能是 7~40 位缩写 SHA（resolve_ref 对 hex ref 不联网展开），
+    # 而 rev-parse HEAD 永远是 40 位完整 SHA，故按前缀比较；分支/tag 解析出的 40 位仍等价于精确比较
+    if [ -n "$ACTUAL_SHA" ] && [ "${ACTUAL_SHA:0:${#RESOLVED}}" = "$RESOLVED" ]; then
         log "[switch] ✓ 完成，容器内源码 commit = $ACTUAL_SHA"
     else
         warn "[switch] ✗ commit 不符: 预期 $RESOLVED, 实际 ${ACTUAL_SHA:-未知}"
